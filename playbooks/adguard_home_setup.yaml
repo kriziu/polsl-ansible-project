@@ -1,0 +1,173 @@
+---
+- name: Instalacja i konfiguracja AdGuard Home
+  hosts: agh
+  vars:
+    adguard_install_dir: /adguardhome
+    vg_name: adg_vg
+    lv_name: adg_lv
+    adguard_version: latest
+    
+  tasks:
+    - name: Aktualizacja cache apt
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Instalacja wymaganych pakietów
+      ansible.builtin.apt:
+        name:
+          - lvm2
+          - curl
+          - tar
+        state: present
+
+    - name: Identyfikacja dodatkowych dysków dla LVM
+      ansible.builtin.shell: |
+        lsblk -dno NAME,TYPE | grep disk | awk '{print $1}' | grep -v $(lsblk -no PKNAME $(findmnt -n -o SOURCE /))
+      register: additional_disks
+      changed_when: false
+
+    - name: Utworzenie woluminów fizycznych na dyskach
+      community.general.lvg:
+        pvs: "{{ additional_disks.stdout_lines | map('regex_replace', '^', '/dev/') | join(',') }}"
+        vg: "{{ vg_name }}"
+        state: present
+      when: additional_disks.stdout_lines | length >= 2
+
+    - name: Sprawdzenie czy wolumin logiczny istnieje
+      ansible.builtin.stat:
+        path: "/dev/{{ vg_name }}/{{ lv_name }}"
+      register: lv_check
+
+    - name: Utworzenie woluminu logicznego z RAID1
+      ansible.builtin.shell: |
+        lvcreate --type raid1 -m 1 -l 100%FREE -n {{ lv_name }} {{ vg_name }}
+      when:
+        - additional_disks.stdout_lines | length >= 2
+        - not lv_check.stat.exists
+
+    - name: Formatowanie woluminu logicznego ext4
+      community.general.filesystem:
+        fstype: ext4
+        dev: "/dev/{{ vg_name }}/{{ lv_name }}"
+        state: present
+
+    - name: Utworzenie katalogu AdGuard Home
+      ansible.builtin.file:
+        path: "{{ adguard_install_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Montowanie woluminu logicznego
+      ansible.posix.mount:
+        path: "{{ adguard_install_dir }}"
+        src: "/dev/{{ vg_name }}/{{ lv_name }}"
+        fstype: ext4
+        state: mounted
+        opts: defaults
+
+    - name: Pobranie AdGuard Home
+      ansible.builtin.get_url:
+        url: https://static.adguard.com/adguardhome/release/AdGuardHome_linux_amd64.tar.gz
+        dest: /tmp/adguardhome.tar.gz
+        mode: '0644'
+
+    - name: Rozpakowanie AdGuard Home
+      ansible.builtin.unarchive:
+        src: /tmp/adguardhome.tar.gz
+        dest: /tmp/
+        remote_src: yes
+
+    - name: Skopiowanie pliku binarnego AdGuard Home
+      ansible.builtin.copy:
+        src: /tmp/AdGuardHome/AdGuardHome
+        dest: "{{ adguard_install_dir }}/AdGuardHome"
+        mode: '0755'
+        remote_src: yes
+
+    - name: Instalacja AdGuard Home jako usługa systemd
+      ansible.builtin.shell: |
+        cd {{ adguard_install_dir }}
+        ./AdGuardHome -s install
+      args:
+        creates: /etc/systemd/system/AdGuardHome.service
+
+    - name: Włączenie i uruchomienie usługi AdGuard Home
+      ansible.builtin.systemd:
+        name: AdGuardHome
+        enabled: yes
+        state: started
+
+    - name: Instalacja firewalld
+      ansible.builtin.package:
+        name: firewalld
+        state: present
+
+    - name: Uruchomienie i włączenie firewalld
+      ansible.builtin.systemd:
+        name: firewalld
+        state: started
+        enabled: yes
+
+    - name: Konfiguracja zapory - zezwolenie na SSH
+      ansible.posix.firewalld:
+        service: ssh
+        permanent: yes
+        state: enabled
+        immediate: yes
+
+    - name: Konfiguracja zapory - zezwolenie na DNS TCP
+      ansible.posix.firewalld:
+        port: 53/tcp
+        permanent: yes
+        state: enabled
+        immediate: yes
+
+    - name: Konfiguracja zapory - zezwolenie na DNS UDP
+      ansible.posix.firewalld:
+        port: 53/udp
+        permanent: yes
+        state: enabled
+        immediate: yes
+
+    - name: Konfiguracja zapory - zezwolenie na interfejs webowy AdGuard Home
+      ansible.posix.firewalld:
+        port: 3000/tcp
+        permanent: yes
+        state: enabled
+        immediate: yes
+
+    - name: Konfiguracja zapory - zezwolenie na panel administracyjny AdGuard Home
+      ansible.posix.firewalld:
+        port: 80/tcp
+        permanent: yes
+        state: enabled
+        immediate: yes
+
+    - name: Ustawienie domyślnej strefy zapory na drop
+      ansible.builtin.shell: |
+        firewall-cmd --set-default-zone=drop
+        firewall-cmd --runtime-to-permanent
+      changed_when: true
+
+    - name: Przeładowanie zapory
+      ansible.builtin.systemd:
+        name: firewalld
+        state: reloaded
+
+    - name: Usunięcie plików tymczasowych
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/adguardhome.tar.gz
+        - /tmp/AdGuardHome
+
+    - name: Wyświetlenie podsumowania instalacji
+      ansible.builtin.debug:
+        msg:
+          - "Instalacja AdGuard Home zakończona pomyślnie"
+          - "Interfejs webowy dostępny pod: http://{{ ansible_host }}:3000"
+          - "Konfiguracja LVM: VG={{ vg_name }}, LV={{ lv_name }}"
+          - "Punkt montowania: {{ adguard_install_dir }}"
+          - "Zapora skonfigurowana: tylko SSH i porty AdGuard Home"

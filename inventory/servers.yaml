@@ -1,0 +1,15 @@
+servers:
+  children:
+    linux:
+      hosts:
+        agh:
+          ansible_host: aghDziecielski
+          ansible_connection: ssh
+          ansible_user: root
+    windows:
+      hosts:
+        winsrv:
+          ansible_host: winsrvDziecielski
+          ansible_connection: ssh
+          ansible_user: Administrator
+          ansible_shell_type: cmd

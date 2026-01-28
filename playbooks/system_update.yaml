@@ -1,0 +1,110 @@
+---
+- name: Bezpieczna aktualizacja systemu operacyjnego z powiadomieniami
+  hosts: linux
+  vars:
+    notification_email: admin@localhost
+    notification_webhook: ""
+    log_file: /var/log/ansible-system-update.log
+    
+  tasks:
+    - name: Blok aktualizacji systemu z obsługą błędów
+      block:
+        - name: Utworzenie pliku logów
+          ansible.builtin.file:
+            path: "{{ log_file }}"
+            state: touch
+            mode: '0644'
+
+        - name: Zapisanie czasu rozpoczęcia aktualizacji
+          ansible.builtin.lineinfile:
+            path: "{{ log_file }}"
+            line: "[{{ ansible_date_time.iso8601 }}] Rozpoczęcie aktualizacji systemu"
+            create: yes
+
+        - name: Aktualizacja cache apt
+          ansible.builtin.apt:
+            update_cache: yes
+            cache_valid_time: 0
+          register: apt_update
+
+        - name: Sprawdzenie dostępnych aktualizacji
+          ansible.builtin.shell: |
+            apt list --upgradable 2>/dev/null | grep -v "Listing" | wc -l
+          register: updates_count
+          changed_when: false
+
+        - name: Aktualizacja wszystkich pakietów
+          ansible.builtin.apt:
+            upgrade: dist
+            autoremove: yes
+            autoclean: yes
+          register: apt_upgrade
+          when: updates_count.stdout | int > 0
+
+        - name: Sprawdzenie czy wymagany restart
+          ansible.builtin.stat:
+            path: /var/run/reboot-required
+          register: reboot_required
+
+        - name: Zapisanie wyniku aktualizacji do logu
+          ansible.builtin.lineinfile:
+            path: "{{ log_file }}"
+            line: "[{{ ansible_date_time.iso8601 }}] Aktualizacja zakończona pomyślnie - zaktualizowano {{ updates_count.stdout }} pakietów"
+
+        - name: Zapisanie informacji o wymaganym restarcie
+          ansible.builtin.lineinfile:
+            path: "{{ log_file }}"
+            line: "[{{ ansible_date_time.iso8601 }}] UWAGA: Wymagany restart systemu"
+          when: reboot_required.stat.exists
+
+        - name: Wyświetlenie podsumowania
+          ansible.builtin.debug:
+            msg:
+              - "Aktualizacja zakończona pomyślnie"
+              - "Zaktualizowano pakietów: {{ updates_count.stdout }}"
+              - "Restart wymagany: {{ 'TAK' if reboot_required.stat.exists else 'NIE' }}"
+
+      rescue:
+        - name: Zapisanie błędu do logu
+          ansible.builtin.lineinfile:
+            path: "{{ log_file }}"
+            line: "[{{ ansible_date_time.iso8601 }}] BŁĄD: {{ ansible_failed_result.msg | default('Nieznany błąd') }}"
+          ignore_errors: yes
+
+        - name: Wysłanie powiadomienia email o błędzie
+          community.general.mail:
+            host: localhost
+            port: 25
+            to: "{{ notification_email }}"
+            subject: "BŁĄD: Aktualizacja systemu {{ inventory_hostname }} nieudana"
+            body: |
+              Aktualizacja systemu na serwerze {{ inventory_hostname }} zakończyła się błędem.
+              
+              Host: {{ inventory_hostname }}
+              Data: {{ ansible_date_time.iso8601 }}
+              Błąd: {{ ansible_failed_result.msg | default('Nieznany błąd') }}
+              
+              Sprawdź logi na serwerze: {{ log_file }}
+          delegate_to: localhost
+          become: no
+          when: notification_email != "" and notification_email != "admin@localhost"
+          ignore_errors: yes
+
+        - name: Wysłanie powiadomienia webhook o błędzie
+          ansible.builtin.uri:
+            url: "{{ notification_webhook }}"
+            method: POST
+            body_format: json
+            body:
+              content: "⚠️ **BŁĄD AKTUALIZACJI SYSTEMU**\n\n**Serwer:** {{ inventory_hostname }}\n**Data:** {{ ansible_date_time.iso8601 }}\n**Błąd:** {{ ansible_failed_result.msg | default('Nieznany błąd') }}"
+            headers:
+              Content-Type: application/json
+            status_code: [200, 204]
+          delegate_to: localhost
+          become: no
+          when: notification_webhook != ""
+          ignore_errors: yes
+
+        - name: Wyświetlenie komunikatu o błędzie
+          ansible.builtin.fail:
+            msg: "Aktualizacja systemu zakończyła się błędem. Sprawdź logi: {{ log_file }}"
