@@ -1,0 +1,101 @@
+---
+- name: Kopia zapasowa AdGuard Home
+  hosts: agh
+  vars:
+    adguard_dir: /adguardhome
+    backup_dir: /home/user/backups/adguard
+    discord_webhook_id: ""
+    discord_webhook_token: ""
+    
+  tasks:
+    - name: Blok kopii zapasowej z obsługą błędów
+      block:
+        - name: Utworzenie katalogu na kopie zapasowe lokalnie
+          ansible.builtin.file:
+            path: "{{ backup_dir }}"
+            state: directory
+            mode: '0755'
+          delegate_to: localhost
+          become: no
+
+        - name: Zatrzymanie usługi AdGuard Home
+          ansible.builtin.systemd:
+            name: AdGuardHome
+            state: stopped
+
+        - name: Utworzenie archiwum AdGuard Home
+          community.general.archive:
+            path: "{{ adguard_dir }}"
+            dest: /tmp/adguard_backup_{{ ansible_date_time.date }}.tar.gz
+            format: gz
+
+        - name: Uruchomienie usługi AdGuard Home
+          ansible.builtin.systemd:
+            name: AdGuardHome
+            state: started
+
+        - name: Pobranie kopii zapasowej na system Ansible
+          ansible.builtin.fetch:
+            src: /tmp/adguard_backup_{{ ansible_date_time.date }}.tar.gz
+            dest: "{{ backup_dir }}/adguard_backup_{{ ansible_date_time.date }}.tar.gz"
+            flat: yes
+
+        - name: Usunięcie tymczasowego archiwum z serwera
+          ansible.builtin.file:
+            path: /tmp/adguard_backup_{{ ansible_date_time.date }}.tar.gz
+            state: absent
+
+        - name: Usunięcie starych kopii zapasowych (starszych niż 7 dni)
+          ansible.builtin.find:
+            paths: "{{ backup_dir }}"
+            patterns: "adguard_backup_*.tar.gz"
+            age: 7d
+          register: old_backups
+          delegate_to: localhost
+          become: no
+
+        - name: Czyszczenie starych kopii
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ old_backups.files }}"
+          delegate_to: localhost
+          become: no
+
+        - name: Wyświetlenie podsumowania
+          ansible.builtin.debug:
+            msg:
+              - "Kopia zapasowa AdGuard Home zakończona pomyślnie"
+              - "Lokalizacja: {{ backup_dir }}/adguard_backup_{{ ansible_date_time.date }}.tar.gz"
+              - "Serwer: {{ inventory_hostname }}"
+
+      rescue:
+        - name: Upewnienie się że usługa jest uruchomiona po błędzie
+          ansible.builtin.systemd:
+            name: AdGuardHome
+            state: started
+          ignore_errors: yes
+
+        - name: Wysłanie powiadomienia na Discord
+          community.general.discord:
+            webhook_id: "{{ discord_webhook_id }}"
+            webhook_token: "{{ discord_webhook_token }}"
+            embeds:
+              - title: "⚠️ BŁĄD KOPII ZAPASOWEJ AdGuard Home"
+                description: "Tworzenie kopii zapasowej zakończyło się błędem"
+                color: 15158332
+                fields:
+                  - name: "Serwer"
+                    value: "{{ inventory_hostname }}"
+                  - name: "Data"
+                    value: "{{ ansible_date_time.iso8601 }}"
+                  - name: "Błąd"
+                    value: "{{ ansible_failed_result.msg | default('Nieznany błąd') }}"
+                timestamp: "{{ ansible_date_time.iso8601 }}"
+          delegate_to: localhost
+          become: no
+          when: discord_webhook_id != "" and discord_webhook_token != ""
+
+        - name: Niepowodzenie kopii zapasowej
+          ansible.builtin.fail:
+            msg: "Kopia zapasowa zakończyła się błędem"
