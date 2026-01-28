@@ -3,14 +3,14 @@
   hosts: agh
   vars:
     adguard_dir: /adguardhome
-    backup_dir: /home/user/backups/adguard
+    backup_dir: "{{ playbook_dir }}/backups"
     discord_webhook_id: ""
     discord_webhook_token: ""
     
   tasks:
     - name: Blok kopii zapasowej z obsługą błędów
       block:
-        - name: Utworzenie katalogu na kopie zapasowe lokalnie
+        - name: Utworzenie katalogu backups w projekcie
           ansible.builtin.file:
             path: "{{ backup_dir }}"
             state: directory
@@ -40,7 +40,7 @@
             dest: "{{ backup_dir }}/adguard_backup_{{ ansible_date_time.date }}.tar.gz"
             flat: yes
 
-        - name: Usunięcie tymczasowego archiwum z serwera
+        - name: Usunięcie tymczasowego archiwum z serwera agh
           ansible.builtin.file:
             path: /tmp/adguard_backup_{{ ansible_date_time.date }}.tar.gz
             state: absent
@@ -62,12 +62,19 @@
           delegate_to: localhost
           become: no
 
+        - name: Sprawdzenie rozmiaru kopii zapasowej
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/adguard_backup_{{ ansible_date_time.date }}.tar.gz"
+          register: backup_stat
+          delegate_to: localhost
+          become: no
+
         - name: Wyświetlenie podsumowania
           ansible.builtin.debug:
             msg:
               - "Kopia zapasowa AdGuard Home zakończona pomyślnie"
-              - "Lokalizacja: {{ backup_dir }}/adguard_backup_{{ ansible_date_time.date }}.tar.gz"
-              - "Serwer: {{ inventory_hostname }}"
+              - "Lokalizacja na Ansible_Dziecielski: {{ backup_dir }}/adguard_backup_{{ ansible_date_time.date }}.tar.gz"
+              - "Rozmiar: {{ (backup_stat.stat.size / 1024 / 1024) | round(2) }} MB"
 
       rescue:
         - name: Upewnienie się że usługa jest uruchomiona po błędzie
