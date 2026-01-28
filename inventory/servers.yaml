@@ -3,13 +3,13 @@ servers:
     linux:
       hosts:
         agh:
-          ansible_host: aghDziecielski
+          ansible_host: 192.168.229.11
           ansible_connection: ssh
           ansible_user: root
     windows:
       hosts:
         winsrv:
-          ansible_host: winsrvDziecielski
+          ansible_host: 192.168.229.7
           ansible_connection: ssh
           ansible_user: Administrator
           ansible_shell_type: cmd
