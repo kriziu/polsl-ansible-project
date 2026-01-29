@@ -2,27 +2,30 @@
 - name: Przywracanie AdGuard Home z kopii zapasowej
   hosts: agh
   vars:
-    backup_dir: "{{ playbook_dir }}/backups"
     adguard_dir: /adguardhome
     backup_file: ""
     
   tasks:
     - name: Sprawdzenie czy podano plik kopii zapasowej
       ansible.builtin.fail:
-        msg: "Musisz podać nazwę pliku kopii: -e backup_file=adguard_backup_2026-01-28.tar.gz"
+        msg: "Musisz podać pełną ścieżkę do pliku: -e backup_file=backups/adguard_backup_2026-01-28.tar.gz"
       when: backup_file == ""
 
     - name: Sprawdzenie czy plik kopii istnieje
       ansible.builtin.stat:
-        path: "{{ backup_dir }}/{{ backup_file }}"
+        path: "{{ backup_file }}"
       register: backup_check
       delegate_to: localhost
       become: no
 
     - name: Błąd jeśli plik nie istnieje
       ansible.builtin.fail:
-        msg: "Plik {{ backup_file }} nie istnieje w {{ backup_dir }}"
+        msg: "Plik {{ backup_file }} nie istnieje"
       when: not backup_check.stat.exists
+
+    - name: Pobranie nazwy pliku z pełnej ścieżki
+      ansible.builtin.set_fact:
+        backup_filename: "{{ backup_file | basename }}"
 
     - name: Zatrzymanie usługi AdGuard Home
       ansible.builtin.systemd:
@@ -38,8 +41,8 @@
 
     - name: Przesłanie kopii zapasowej na serwer agh
       ansible.builtin.copy:
-        src: "{{ backup_dir }}/{{ backup_file }}"
-        dest: /tmp/{{ backup_file }}
+        src: "{{ backup_file }}"
+        dest: /tmp/{{ backup_filename }}
         mode: '0644'
 
     - name: Usunięcie zawartości katalogu AdGuard
@@ -52,13 +55,13 @@
 
     - name: Rozpakowanie kopii zapasowej
       ansible.builtin.unarchive:
-        src: /tmp/{{ backup_file }}
+        src: /tmp/{{ backup_filename }}
         dest: /
         remote_src: yes
 
     - name: Usunięcie tymczasowego pliku
       ansible.builtin.file:
-        path: /tmp/{{ backup_file }}
+        path: /tmp/{{ backup_filename }}
         state: absent
 
     - name: Uruchomienie usługi AdGuard Home
@@ -70,5 +73,5 @@
       ansible.builtin.debug:
         msg:
           - "Przywracanie AdGuard Home zakończone pomyślnie"
-          - "Przywrócono z: {{ backup_file }}"
+          - "Przywrócono z: {{ backup_filename }}"
           - "Kopia przed przywróceniem: /tmp/adguard_before_restore_{{ ansible_date_time.date }}.tar.gz"

@@ -3,16 +3,19 @@
   hosts: agh
   vars:
     adguard_dir: /adguardhome
-    backup_dir: "{{ playbook_dir }}/backups"
     discord_webhook_id: ""
     discord_webhook_token: ""
     
   tasks:
+    - name: Ustawienie domyślnej ścieżki backup
+      ansible.builtin.set_fact:
+        backup_path: "{{ backup_dir | default('backups') }}"
+
     - name: Blok kopii zapasowej z obsługą błędów
       block:
         - name: Utworzenie katalogu backups w projekcie
           ansible.builtin.file:
-            path: "{{ backup_dir }}"
+            path: "{{ backup_path }}"
             state: directory
             mode: '0755'
           delegate_to: localhost
@@ -37,7 +40,7 @@
         - name: Pobranie kopii zapasowej na system Ansible
           ansible.builtin.fetch:
             src: /tmp/adguard_backup_{{ ansible_date_time.date }}.tar.gz
-            dest: "{{ backup_dir }}/adguard_backup_{{ ansible_date_time.date }}.tar.gz"
+            dest: "{{ backup_path }}/adguard_backup_{{ ansible_date_time.date }}.tar.gz"
             flat: yes
 
         - name: Usunięcie tymczasowego archiwum z serwera agh
@@ -47,7 +50,7 @@
 
         - name: Usunięcie starych kopii zapasowych (starszych niż 7 dni)
           ansible.builtin.find:
-            paths: "{{ backup_dir }}"
+            paths: "{{ backup_path }}"
             patterns: "adguard_backup_*.tar.gz"
             age: 7d
           register: old_backups
@@ -64,7 +67,7 @@
 
         - name: Sprawdzenie rozmiaru kopii zapasowej
           ansible.builtin.stat:
-            path: "{{ backup_dir }}/adguard_backup_{{ ansible_date_time.date }}.tar.gz"
+            path: "{{ backup_path }}/adguard_backup_{{ ansible_date_time.date }}.tar.gz"
           register: backup_stat
           delegate_to: localhost
           become: no
@@ -73,7 +76,7 @@
           ansible.builtin.debug:
             msg:
               - "Kopia zapasowa AdGuard Home zakończona pomyślnie"
-              - "Lokalizacja na Ansible_Dziecielski: {{ backup_dir }}/adguard_backup_{{ ansible_date_time.date }}.tar.gz"
+              - "Lokalizacja na Ansible_Dziecielski: {{ backup_path }}/adguard_backup_{{ ansible_date_time.date }}.tar.gz"
               - "Rozmiar: {{ (backup_stat.stat.size / 1024 / 1024) | round(2) }} MB"
 
       rescue:
