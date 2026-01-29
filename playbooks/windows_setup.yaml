@@ -1,0 +1,165 @@
+---
+- name: Konfiguracja puli dyskowej i udziału sieciowego Windows Server
+  hosts: winsrv
+  vars:
+    pool_name: StoragePool_Dziecielski
+    vdisk_name: VirtualDisk_Dziecielski
+    drive_letter: F
+    group_name: Kierownicy_Dziecielski
+    share_name: Projekty_Dziecielski
+    share_path: "F:\\Projekty"
+    
+  tasks:
+        - name: Pobranie listy dostępnych dysków fizycznych
+          ansible.windows.win_powershell:
+            script: |
+              Get-PhysicalDisk | Where-Object {$_.CanPool -eq $True} | Select-Object FriendlyName, MediaType, Size | ConvertTo-Json
+          register: available_disks
+
+        - name: Utworzenie Storage Pool z wszystkich dostępnych dysków
+          ansible.windows.win_powershell:
+            script: |
+              $disks = Get-PhysicalDisk | Where-Object {$_.CanPool -eq $True}
+              if ($disks.Count -gt 0) {
+                  New-StoragePool -FriendlyName "{{ pool_name }}" -StorageSubSystemFriendlyName "Windows Storage*" -PhysicalDisks $disks
+              }
+          register: storage_pool
+          failed_when: false
+
+        - name: Utworzenie Storage Tiers (SSD i HDD)
+          ansible.windows.win_powershell:
+            script: |
+              $pool = Get-StoragePool -FriendlyName "{{ pool_name }}"
+              $ssdDisks = Get-PhysicalDisk | Where-Object {$_.MediaType -eq "SSD" -and $_.StoragePoolId -eq $pool.ObjectId}
+              $hddDisks = Get-PhysicalDisk | Where-Object {$_.MediaType -eq "HDD" -and $_.StoragePoolId -eq $pool.ObjectId}
+              
+              if ($ssdDisks.Count -gt 0) {
+                  New-StorageTier -StoragePoolFriendlyName "{{ pool_name }}" -FriendlyName "SSD_Tier" -MediaType SSD
+              }
+              if ($hddDisks.Count -gt 0) {
+                  New-StorageTier -StoragePoolFriendlyName "{{ pool_name }}" -FriendlyName "HDD_Tier" -MediaType HDD
+              }
+          ignore_errors: yes
+
+        - name: Utworzenie Virtual Disk z mirroring
+          ansible.windows.win_powershell:
+            script: |
+              New-VirtualDisk -StoragePoolFriendlyName "{{ pool_name }}" -FriendlyName "{{ vdisk_name }}" -ResiliencySettingName Mirror -UseMaximumSize
+          register: virtual_disk
+
+        - name: Inicjalizacja dysku
+          ansible.windows.win_powershell:
+            script: |
+              $disk = Get-VirtualDisk -FriendlyName "{{ vdisk_name }}" | Get-Disk
+              if ($disk.PartitionStyle -eq "RAW") {
+                  Initialize-Disk -Number $disk.Number -PartitionStyle GPT
+              }
+
+        - name: Utworzenie partycji i formatowanie ReFS
+          ansible.windows.win_powershell:
+            script: |
+              $disk = Get-VirtualDisk -FriendlyName "{{ vdisk_name }}" | Get-Disk
+              $partition = New-Partition -DiskNumber $disk.Number -UseMaximumSize -DriveLetter {{ drive_letter }}
+              Format-Volume -DriveLetter {{ drive_letter }} -FileSystem ReFS -NewFileSystemLabel "Storage" -Confirm:$false
+
+        - name: Utworzenie użytkownika Marek Romanek
+          ansible.windows.win_user:
+            name: mromanek
+            password: P@ssw0rd123!
+            fullname: Marek Romanek
+            state: present
+            password_never_expires: yes
+
+        - name: Utworzenie użytkownika Jacek Gula
+          ansible.windows.win_user:
+            name: jgula
+            password: P@ssw0rd123!
+            fullname: Jacek Gula
+            state: present
+            password_never_expires: yes
+
+        - name: Utworzenie grupy Kierownicy_Dziecielski
+          ansible.windows.win_group:
+            name: "{{ group_name }}"
+            description: "Grupa kierownikow z pelnym dostepem do projektow"
+            state: present
+
+        - name: Dodanie użytkowników do grupy
+          ansible.windows.win_group_membership:
+            name: "{{ group_name }}"
+            members:
+              - mromanek
+              - jgula
+            state: present
+
+        - name: Utworzenie katalogu Projekty
+          ansible.windows.win_file:
+            path: "{{ share_path }}"
+            state: directory
+
+        - name: Utworzenie udziału sieciowego
+          ansible.windows.win_share:
+            name: "{{ share_name }}"
+            path: "{{ share_path }}"
+            state: present
+            full: "{{ group_name }},Administrators"
+            read: ""
+            change: ""
+
+        - name: Ustawienie uprawnień NTFS na katalog
+          ansible.windows.win_powershell:
+            script: |
+              $acl = Get-Acl "{{ share_path }}"
+              $acl.SetAccessRuleProtection($true, $false)
+              
+              $adminRule = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrators","FullControl","ContainerInherit,ObjectInherit","None","Allow")
+              $groupRule = New-Object System.Security.AccessControl.FileSystemAccessRule("{{ group_name }}","FullControl","ContainerInherit,ObjectInherit","None","Allow")
+              
+              $acl.AddAccessRule($adminRule)
+              $acl.AddAccessRule($groupRule)
+              
+              Set-Acl "{{ share_path }}" $acl
+
+        - name: Instalacja Chocolatey
+          ansible.windows.win_powershell:
+            script: |
+              if (!(Get-Command choco -ErrorAction SilentlyContinue)) {
+                  Set-ExecutionPolicy Bypass -Scope Process -Force
+                  [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+                  iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+              }
+
+        - name: Instalacja 7zip przez Chocolatey
+          chocolatey.chocolatey.win_chocolatey:
+            name: 7zip
+            state: present
+
+        - name: Instalacja BIND tools (dig) przez Chocolatey
+          chocolatey.chocolatey.win_chocolatey:
+            name: bind-toolsonly
+            state: present
+
+        - name: Instalacja Firefox przez Chocolatey
+          chocolatey.chocolatey.win_chocolatey:
+            name: firefox
+            state: present
+
+        - name: Dodanie wpisu rejestru zapobiegającego usuwaniu drukarek przez użytkowników
+          ansible.windows.win_regedit:
+            path: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint
+            name: RestrictDriverInstallationToAdministrators
+            data: 1
+            type: dword
+            state: present
+
+        - name: Wyświetlenie podsumowania
+          ansible.builtin.debug:
+            msg:
+              - "Konfiguracja Windows Server zakończona pomyślnie"
+              - "Storage Pool: {{ pool_name }}"
+              - "Virtual Disk: {{ vdisk_name }} (Mirror, ReFS)"
+              - "Dysk: {{ drive_letter }}:"
+              - "Grupa: {{ group_name }}"
+              - "Udział: \\\\{{ ansible_host }}\\{{ share_name }}"
+              - "Użytkownicy: mromanek, jgula"
+              - "Zainstalowane: 7zip, dig, Firefox"

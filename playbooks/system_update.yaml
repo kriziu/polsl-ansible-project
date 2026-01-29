@@ -1,5 +1,5 @@
 ---
-- name: Bezpieczna aktualizacja systemu operacyjnego
+- name: Aktualizacja Systemu Operacyjnego
   hosts: linux
   gather_facts: yes
   vars:
